@@ -1,0 +1,231 @@
+/**
+ * User Routes
+ */
+const express = require('express');
+const { verifyToken } = require('../middleware/auth.middleware');
+const { db } = require('../config/database');
+const { upload } = require('../middleware/upload.middleware');
+const { formatSuccessResponse, formatErrorResponse } = require('../utils/helpers');
+
+const router = express.Router();
+
+/**
+ * @route GET /api/users/profile
+ * @desc Get user's profile information
+ * @access Private
+ */
+router.get('/profile', verifyToken, async (req, res) => {
+    try {
+        const user = await db.get(
+            `SELECT u.user_id, u.email, u.created_at, u.last_login, 
+                    up.name, up.profile_picture_url, up.phone_number, 
+                    up.date_of_birth, up.gender, 
+                    up.emergency_contact_name, up.emergency_contact_phone
+             FROM users u
+             JOIN user_profiles up ON u.user_id = up.user_id
+             WHERE u.user_id = ? AND u.is_active = 1`,
+            [req.userId]
+        );
+
+        if (!user) {
+            return res.status(404).json(
+                formatErrorResponse('User not found or account deactivated')
+            );
+        }
+
+        res.status(200).json(
+            formatSuccessResponse({
+                userId: user.user_id,
+                email: user.email,
+                name: user.name,
+                profilePicture: user.profile_picture_url,
+                phoneNumber: user.phone_number,
+                dateOfBirth: user.date_of_birth,
+                gender: user.gender,
+                emergencyContactName: user.emergency_contact_name,
+                emergencyContactPhone: user.emergency_contact_phone,
+                createdAt: user.created_at,
+                lastLogin: user.last_login
+            })
+        );
+    } catch (err) {
+        console.error('Error fetching profile:', err);
+        return res.status(500).json(
+            formatErrorResponse('Failed to fetch profile information')
+        );
+    }
+});
+
+/**
+ * @route PUT /api/users/profile
+ * @desc Update user profile information
+ * @access Private
+ */
+router.put('/profile', verifyToken, async (req, res) => {
+    const {
+        name,
+        phoneNumber,
+        dateOfBirth,
+        gender,
+        emergencyContactName,
+        emergencyContactPhone
+    } = req.body;
+
+    try {
+        // Update profile in database
+        const result = await db.run(
+            `UPDATE user_profiles 
+             SET name = COALESCE(?, name),
+                 phone_number = COALESCE(?, phone_number),
+                 date_of_birth = COALESCE(?, date_of_birth),
+                 gender = COALESCE(?, gender),
+                 emergency_contact_name = COALESCE(?, emergency_contact_name),
+                 emergency_contact_phone = COALESCE(?, emergency_contact_phone)
+             WHERE user_id = ?`,
+            [name, phoneNumber, dateOfBirth, gender, emergencyContactName, emergencyContactPhone, req.userId]
+        );
+
+        if (result.changes === 0) {
+            return res.status(404).json(
+                formatErrorResponse('User profile not found')
+            );
+        }
+
+        res.status(200).json(
+            formatSuccessResponse({
+                name,
+                phoneNumber,
+                dateOfBirth,
+                gender,
+                emergencyContactName,
+                emergencyContactPhone
+            })
+        );
+    } catch (err) {
+        console.error('Error updating profile:', err);
+        return res.status(500).json(
+            formatErrorResponse('Failed to update profile information')
+        );
+    }
+});
+
+/**
+ * @route POST /api/users/upload-profile-picture
+ * @desc Upload user profile picture
+ * @access Private
+ */
+router.post('/upload-profile-picture', verifyToken, upload.single('profilePicture'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json(
+                formatErrorResponse('No profile picture uploaded')
+            );
+        }
+
+        const profilePicUrl = `/uploads/${req.file.filename}`;
+        
+        // Update profile in database
+        const result = await db.run(
+            `UPDATE user_profiles SET profile_picture_url = ? WHERE user_id = ?`,
+            [profilePicUrl, req.userId]
+        );
+
+        if (result.changes === 0) {
+            return res.status(404).json(
+                formatErrorResponse('User profile not found')
+            );
+        }
+
+        res.status(200).json(
+            formatSuccessResponse({
+                profilePicture: profilePicUrl
+            })
+        );
+    } catch (err) {
+        console.error('Error uploading profile picture:', err);
+        return res.status(500).json(
+            formatErrorResponse('Failed to upload profile picture')
+        );
+    }
+});
+
+/**
+ * @route GET /api/users/search
+ * @desc Search for users by email
+ * @access Private
+ */
+router.get('/search', verifyToken, async (req, res) => {
+    const { email } = req.query;
+    
+    if (!email) {
+        return res.status(400).json(
+            formatErrorResponse('Email parameter is required')
+        );
+    }
+    
+    try {
+        const users = await db.all(
+            `SELECT u.user_id, u.email, up.name, up.profile_picture_url
+             FROM users u
+             JOIN user_profiles up ON u.user_id = up.user_id
+             WHERE u.email LIKE ? AND u.is_active = 1 AND u.user_id != ?
+             LIMIT 10`,
+            [`%${email}%`, req.userId]
+        );
+        
+        res.status(200).json(
+            formatSuccessResponse(users.map(user => ({
+                userId: user.user_id,
+                email: user.email,
+                name: user.name,
+                profilePicture: user.profile_picture_url
+            })))
+        );
+    } catch (err) {
+        console.error('Error searching users:', err);
+        return res.status(500).json(
+            formatErrorResponse('Failed to search users')
+        );
+    }
+});
+
+/**
+ * @route GET /api/users/:userId
+ * @desc Get public profile information for a specific user
+ * @access Private
+ */
+router.get('/:userId', verifyToken, async (req, res) => {
+    const { userId } = req.params;
+    
+    try {
+        const user = await db.get(
+            `SELECT u.user_id, u.email, up.name, up.profile_picture_url
+             FROM users u
+             JOIN user_profiles up ON u.user_id = up.user_id
+             WHERE u.user_id = ? AND u.is_active = 1`,
+            [userId]
+        );
+        
+        if (!user) {
+            return res.status(404).json(
+                formatErrorResponse('User not found')
+            );
+        }
+        
+        res.status(200).json(
+            formatSuccessResponse({
+                userId: user.user_id,
+                email: user.email,
+                name: user.name,
+                profilePicture: user.profile_picture_url
+            })
+        );
+    } catch (err) {
+        console.error('Error fetching user:', err);
+        return res.status(500).json(
+            formatErrorResponse('Failed to fetch user information')
+        );
+    }
+});
+
+module.exports = router;
